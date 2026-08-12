@@ -1,0 +1,525 @@
+// TAVEN Marketplace — Full Prisma Schema
+// Migration: 0001_marketplace_schema
+// Status: BLOCKED-DB-001 (no live PostgreSQL; validated by constraint tests)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════
+// IDENTITY & AUTH
+// ═══════════════════════════════════════════════════════════
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  passwordHash    String
+  displayName     String
+  mfaEnabled      Boolean  @default(false)
+  mfaSecret       String?
+  mfaVerifiedAt   DateTime?
+  role            UserRole @default(VIEWER)
+  status          UserStatus @default(ACTIVE)
+  locale          String   @default("en")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastLoginAt     DateTime?
+
+  // Relations
+  ownedMarketplaces   MarketplaceTenant[]   @relation("MarketplaceOwner")
+  sellerOrgs          SellerOrgMember[]
+  sessions            Session[]
+  auditLogs           AuditLog[]
+  crossGrants         CrossMarketplaceGrant[] @relation("GrantRecipient")
+  issuedGrants        CrossMarketplaceGrant[] @relation("GrantIssuer")
+
+  @@index([email])
+  @@index([role, status])
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  userId      String
+  token       String   @unique
+  expiresAt   DateTime
+  mfaStepUp   Boolean  @default(false)
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId, expiresAt])
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  MARKETPLACE_ADMIN
+  SELLER_ADMIN
+  STORE_MANAGER
+  OFFICE_ADMIN
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDAD
+  PENDING_VERIFICATION
+  DEACTIVATED
+}
+
+// ═══════════════════════════════════════════════════════════
+// MARKETPLACE TENANT REGISTRY
+// ═══════════════════════════════════════════════════════════
+
+model MarketplaceTenant {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  description     String?
+  ownerId         String
+  status          MarketplaceStatus @default(DRAFT)
+  template        MarketplaceTemplate @default(COMMERCE_HUB)
+  domain          String?  @unique
+  logoUrl         String?
+  bannerUrl       String?
+  primaryColor    String   @default("#1a1a2e")
+  accentColor     String   @default("#d4af37")
+  locale          String   @default("en")
+  supportedLocales String[] @default(["en"])
+  currency        String   @default("USD")
+  commissionRate  Float    @default(0.0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  publishedAt     DateTime?
+  suspendedAt     DateTime?
+
+  // Relations
+  owner           User     @relation("MarketplaceOwner", fields: [ownerId], references: [id])
+  sellerOrgs      SellerOrg[]
+  products        Product[]
+  categories      Category[]
+  orders          Order[]
+  distributions   SupplierDistribution[]
+  advertisingPolicies AdvertisingPolicy[]
+  crossGrants     CrossMarketplaceGrant[]
+
+  @@index([slug])
+  @@index([ownerId])
+  @@index([status])
+}
+
+enum MarketplaceStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum MarketplaceTemplate {
+  COMMERCE_HUB
+  CREATOR_MARKET
+  B2B_EXCHANGE
+}
+
+// ═══════════════════════════════════════════════════════════
+// SELLER ORGANIZATIONS & STORES
+// ═══════════════════════════════════════════════════════════
+
+model SellerOrg {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  marketplaceId   String
+  status          SellerStatus @default(PENDING_APPLICATION)
+  tier            SellerTier   @default(STARTER)
+  applicationData Json?
+  approvedAt      DateTime?
+  suspendedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+  members         SellerOrgMember[]
+  stores          Store[]
+  products        Product[]
+  orders          Order[]
+
+  @@unique([slug, marketplaceId])
+  @@index([marketplaceId, status])
+}
+
+model SellerOrgMember {
+  id          String   @id @default(cuid())
+  userId      String
+  sellerOrgId String
+  role        SellerMemberRole @default(MEMBER)
+  joinedAt    DateTime @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sellerOrg   SellerOrg @relation(fields: [sellerOrgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sellerOrgId])
+}
+
+model Store {
+  id              String   @id @default(cuid())
+  slug            String
+  name            String
+  sellerOrgId     String
+  template        StoreTemplate @default(GENERAL)
+  status          StoreStatus   @default(DRAFT)
+  description     String?
+  logoUrl         String?
+  bannerUrl       String?
+  primaryColor    String   @default("#1a1a2e")
+  accentColor     String   @default("#d4af37")
+  publishedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  sellerOrg       SellerOrg @relation(fields: [sellerOrgId], references: [id])
+  storeProducts   StoreProduct[]
+  orders          Order[]
+
+  @@unique([slug, sellerOrgId])
+  @@index([sellerOrgId, status])
+}
+
+enum SellerStatus {
+  PENDING_APPLICATION
+  UNDER_REVIEW
+  APPROVED
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum SellerTier {
+  STARTER
+  GROWTH
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SellerMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum StoreTemplate {
+  FASHION
+  ELECTRONICS
+  ART_GALLERY
+  FOOD_BEVERAGES
+  SERVICES
+  GENERAL
+}
+
+enum StoreStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+// ═══════════════════════════════════════════════════════════
+// PRODUCTS & CATALOG
+// ═══════════════════════════════════════════════════════════
+
+model Product {
+  id                String   @id @default(cuid())
+  sku               String   @unique
+  name              String
+  description       String?
+  sellerOrgId       String
+  marketplaceId     String
+  categoryId        String?
+  status            ProductStatus @default(DRAFT)
+  publicationState  PublicationState @default(UNPUBLISHED)
+  basePrice         Float
+  currency          String   @default("USD")
+  stockQuantity     Int      @default(0)
+  lowStockThreshold Int      @default(5)
+  weight            Float?
+  dimensions        Json?
+  images            String[]
+  tags              String[]
+  metadata          Json?
+  gatesPassedAt     DateTime?
+  publishedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  sellerOrg         SellerOrg         @relation(fields: [sellerOrgId], references: [id])
+  marketplace       MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+  category          Category?         @relation(fields: [categoryId], references: [id])
+  storeProducts     StoreProduct[]
+  orderItems        OrderItem[]
+  gateResults       ProductGateResult[]
+  distributions     SupplierDistribution[]
+  priceHistory      PriceHistory[]
+
+  @@index([sellerOrgId, status])
+  @@index([marketplaceId, publicationState])
+  @@index([sku])
+  @@index([categoryId])
+}
+
+model StoreProduct {
+  id          String   @id @default(cuid())
+  storeId     String
+  productId   String
+  addedAt     DateTime @default(now())
+  manuallySelected Boolean @default(true)
+  displayOrder Int     @default(0)
+  customPrice Float?
+  isActive    Boolean  @default(true)
+
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, productId])
+  @@index([storeId, isActive])
+}
+
+model ProductGateResult {
+  id          String   @id @default(cuid())
+  productId   String
+  gateName    String
+  passed      Boolean
+  reason      String?
+  checkedAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, gateName])
+  @@index([productId])
+}
+
+model PriceHistory {
+  id          String   @id @default(cuid())
+  productId   String
+  oldPrice    Float
+  newPrice    Float
+  changedBy   String
+  reason      String?
+  changedAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, changedAt])
+}
+
+model Category {
+  id              String   @id @default(cuid())
+  slug            String
+  name            String
+  parentId        String?
+  marketplaceId   String
+  displayOrder    Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  // Relations
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+  parent          Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children        Category[] @relation("CategoryHierarchy")
+  products        Product[]
+
+  @@unique([slug, marketplaceId])
+  @@index([marketplaceId, parentId])
+}
+
+enum ProductStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  ACTIVE
+  DISCONTINUED
+}
+
+enum PublicationState {
+  UNPUBLISHED
+  GATES_CHECKING
+  GATES_FAILED
+  GATES_PASSED
+  PUBLISHED
+  SUSPENDED
+}
+
+// ═══════════════════════════════════════════════════════════
+// ORDERS & COMMERCE
+// ═══════════════════════════════════════════════════════════
+
+model Order {
+  id              String   @id @default(cuid())
+  orderNumber     String   @unique
+  marketplaceId   String
+  sellerOrgId     String
+  storeId         String?
+  customerId      String
+  status          OrderStatus @default(PENDING)
+  subtotal        Float
+  tax             Float    @default(0)
+  shipping        Float    @default(0)
+  total           Float
+  currency        String   @default("USD")
+  shippingAddress Json?
+  billingAddress  Json?
+  notes           String?
+  placedAt        DateTime @default(now())
+  fulfilledAt     DateTime?
+  cancelledAt     DateTime?
+
+  // Relations
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+  sellerOrg       SellerOrg         @relation(fields: [sellerOrgId], references: [id])
+  store           Store?            @relation(fields: [storeId], references: [id])
+  items           OrderItem[]
+
+  @@index([marketplaceId, status])
+  @@index([sellerOrgId, status])
+  @@index([customerId, placedAt])
+  @@index([orderNumber])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  productId   String
+  quantity    Int
+  unitPrice   Float
+  totalPrice  Float
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+// ═══════════════════════════════════════════════════════════
+// SUPPLIER DISTRIBUTION
+// ═══════════════════════════════════════════════════════════
+
+model SupplierDistribution {
+  id              String   @id @default(cuid())
+  productId       String
+  marketplaceId   String
+  distributionType DistributionType @default(AUTO)
+  isActive        Boolean  @default(true)
+  eligibilityCriteria Json?
+  distributedAt   DateTime @default(now())
+
+  product         Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+
+  @@unique([productId, marketplaceId])
+  @@index([marketplaceId, isActive])
+}
+
+enum DistributionType {
+  AUTO
+  MANUAL
+  INVITE_ONLY
+}
+
+// ═══════════════════════════════════════════════════════════
+// ADVERTISING GOVERNANCE
+// ═══════════════════════════════════════════════════════════
+
+model AdvertisingPolicy {
+  id              String   @id @default(cuid())
+  marketplaceId   String
+  policyType      AdvertisingPolicyType @default(DENY_ALL)
+  allowedRoles    UserRole[]
+  maxBudgetDaily  Float?
+  requiresApproval Boolean @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+
+  @@unique([marketplaceId, policyType])
+}
+
+enum AdvertisingPolicyType {
+  DENY_ALL
+  PLATFORM_ONLY
+  MARKETPLACE_APPROVED
+  SELF_SERVE
+}
+
+// ═══════════════════════════════════════════════════════════
+// CROSS-MARKETPLACE GRANTS
+// ═══════════════════════════════════════════════════════════
+
+model CrossMarketplaceGrant {
+  id              String   @id @default(cuid())
+  recipientId     String
+  issuerId        String
+  marketplaceId   String
+  grantType       GrantType
+  permissions     String[]
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  recipient       User              @relation("GrantRecipient", fields: [recipientId], references: [id])
+  issuer          User              @relation("GrantIssuer", fields: [issuerId], references: [id])
+  marketplace     MarketplaceTenant @relation(fields: [marketplaceId], references: [id])
+
+  @@index([recipientId, marketplaceId])
+  @@index([issuerId])
+}
+
+enum GrantType {
+  CROSS_SELL
+  FULFILLMENT
+  ANALYTICS_VIEW
+  ADMIN_DELEGATE
+}
+
+// ═══════════════════════════════════════════════════════════
+// AUDIT LOG
+// ═══════════════════════════════════════════════════════════
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  action      String
+  resource    String
+  resourceId  String?
+  details     Json?
+  ipAddress   String?
+  timestamp   DateTime @default(now())
+
+  user        User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId, timestamp])
+  @@index([resource, resourceId])
+  @@index([action, timestamp])
+}
